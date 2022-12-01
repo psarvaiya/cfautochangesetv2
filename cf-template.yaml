@@ -1,0 +1,70 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  SelectStage:
+    Type: String
+    AllowedValues:
+      - dev
+      - stage
+      - prod
+    ConstraintDescription: must specify prod, dev, or stage.
+
+  S3BucketName:
+    Type: String
+    AllowedPattern: '(?!(^xn--|.+-s3alias$))^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$'
+    ConstraintDescription: ' Incorrect bucket naming convention'
+
+Mappings: 
+  EnvMap: 
+    dev: 
+      InstanceType : "t2.micro"
+      name: 'dev setup'
+    stage: 
+      InstanceType : "t2.small"
+      name: 'stage setup'
+    prod: 
+      InstanceType : "t2.large"
+      name: 'prod setup'
+
+Conditions:
+  CreateProdResources: !Equals [!Ref SelectStage, prod]
+
+Resources:
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !FindInMap [EnvMap, !Ref "SelectStage", InstanceType]
+      ImageId: ami-09d3b3274b6c5d4aa
+      Tags: 
+      - Key: 'name'
+        Value: !FindInMap [EnvMap, !Ref "SelectStage", name]
+
+  MountPoint:
+    Type: "AWS::EC2::VolumeAttachment"
+    Condition: CreateProdResources
+    Properties:
+      InstanceId: !Ref EC2Instance
+      VolumeId: !Ref NewVolume
+      Device: /dev/sdh
+
+  NewVolume:
+    Type: "AWS::EC2::Volume"
+    Condition: CreateProdResources
+    Properties:
+      Size: 100
+      AvailabilityZone: !GetAtt EC2Instance.AvailabilityZone
+
+  CreateS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+        BucketName: !Ref S3BucketName
+
+
+Outputs:
+  EC2Instance:
+    Value: !Ref 'EC2Instance'
+    Description: 'EC2 instance create'
+
+  BucketName:
+    Value: !Ref 'CreateS3Bucket' 
+    Description: Name of the Amazon S3 bucket
