@@ -74,7 +74,7 @@ function loop_parameters(){
 
 
 function create_change_set(){
-        aws cloudformation create-change-set --stack-name $STACKNAME --change-set-name $CHANGESET --parameters $s_parameters --template-body file://$FILENAME
+        aws cloudformation create-change-set --stack-name $STACKNAME --change-set-name $CHANGESET --parameters $s_parameters --template-body file://$FILENAME --capabilities CAPABILITY_NAMED_IAM
 
         if [[ $? -eq 255 ]]; then
                 print_color 'red' 'PARAMETERS passed are incorrect, exiting the script'
@@ -82,10 +82,10 @@ function create_change_set(){
 
         fi
 
-        aws cloudformation create-change-set --stack-name $STACKNAME --change-set-name $CHANGESET --parameters $s_parameters --template-body file://$FILENAME > create_change_set.txt
+        aws cloudformation create-change-set --stack-name $STACKNAME --change-set-name $CHANGESET --parameters $s_parameters --template-body file://$FILENAME --capabilities CAPABILITY_NAMED_IAM > create_change_set.txt
 
 cat > create_change_set_command.txt <<-EOF
-aws cloudformation create-change-set --stack-name $STACKNAME --change-set-name $CHANGESET --parameters $s_parameters --template-body file://$FILENAME
+aws cloudformation create-change-set --stack-name $STACKNAME --change-set-name $CHANGESET --parameters $s_parameters --template-body --capabilities CAPABILITY_NAMED_IAM file://$FILENAME
 EOF
 
 }
