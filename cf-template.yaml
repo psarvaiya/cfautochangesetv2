@@ -1,70 +1,192 @@
+---
+
 AWSTemplateFormatVersion: 2010-09-09
 
-Parameters:
-  SelectStage:
-    Type: String
-    AllowedValues:
-      - dev
-      - stage
-      - prod
-    ConstraintDescription: must specify prod, dev, or stage.
+Description: "Creates API Gateway and sets up complyscan s3"
 
+Parameters:
   S3BucketName:
     Type: String
     AllowedPattern: '(?!(^xn--|.+-s3alias$))^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$'
     ConstraintDescription: ' Incorrect bucket naming convention'
+    Description: 'Enter S3 bucket name'
+  ApiName:
+    Type: String
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: ' Should contain alphabets and numbers'
+    Description: 'Enter REST API name'
 
-Mappings: 
-  EnvMap: 
-    dev: 
-      InstanceType : "t2.micro"
-      name: 'dev setup'
-    stage: 
-      InstanceType : "t2.small"
-      name: 'stage setup'
-    prod: 
-      InstanceType : "t2.large"
-      name: 'prod setup'
-
-Conditions:
-  CreateProdResources: !Equals [!Ref SelectStage, prod]
 
 Resources:
-  EC2Instance:
-    Type: AWS::EC2::Instance
-    Properties:
-      InstanceType: !FindInMap [EnvMap, !Ref "SelectStage", InstanceType]
-      ImageId: ami-09d3b3274b6c5d4aa
-      Tags: 
-      - Key: 'name'
-        Value: !FindInMap [EnvMap, !Ref "SelectStage", name]
-
-  MountPoint:
-    Type: "AWS::EC2::VolumeAttachment"
-    Condition: CreateProdResources
-    Properties:
-      InstanceId: !Ref EC2Instance
-      VolumeId: !Ref NewVolume
-      Device: /dev/sdh
-
-  NewVolume:
-    Type: "AWS::EC2::Volume"
-    Condition: CreateProdResources
-    Properties:
-      Size: 100
-      AvailabilityZone: !GetAtt EC2Instance.AvailabilityZone
-
+  #Create S3 bucket
   CreateS3Bucket:
-    Type: AWS::S3::Bucket
+    Type: 'AWS::S3::Bucket'
     Properties:
-        BucketName: !Ref S3BucketName
+      BucketName: !Ref S3BucketName
 
+
+  apiGatewayCreateRestAPI:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Name: !Ref ApiName
+      Parameters:
+        endpointConfigurationTypes: REGIONAL
+    DependsOn: CreateS3Bucket
+
+  #{"id":"mwiel2","parentId":"vokbqwyb0l","path":"/aws-backup-logging-bucket","pathPart":"aws-backup-logging-bucket"}
+  apiGatewayCreateAWSBackupLoggingBucketResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref apiGatewayCreateRestAPI
+      ParentId: !GetAtt apiGatewayCreateRestAPI.RootResourceId
+      PathPart: !Sub ${CreateS3Bucket}
+    DependsOn: apiGatewayCreateRestAPI
+
+  #{"id":"h5rj8l","parentId":"mwiel2","path":"/aws-backup-logging-bucket/{account_id}","pathPart":"{account_id}"}
+  apiGatewayCreateAccountIDResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref apiGatewayCreateRestAPI
+      ParentId: !Ref apiGatewayCreateAWSBackupLoggingBucketResource
+      PathPart: '{account_id}'
+    DependsOn: apiGatewayCreateAWSBackupLoggingBucketResource
+
+  apiGatewayCreateRegionResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref apiGatewayCreateRestAPI
+      ParentId: !Ref apiGatewayCreateAccountIDResource
+      PathPart: '{region}'
+    DependsOn: apiGatewayCreateAccountIDResource
+
+  apiGatewayCreateObjectResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref apiGatewayCreateRestAPI
+      ParentId: !Ref apiGatewayCreateRegionResource
+      PathPart: '{object}'
+    DependsOn: apiGatewayCreateRegionResource
+
+#{"apiKeyRequired":false,"authorizationType":"NONE","httpMethod":"PUT",
+#"requestParameters":{"method.request.path.account_id":true,"method.request.path.object":true,"method.request.path.region":true}}
+  
+#{"cacheKeyParameters":[],"cacheNamespace":"hm9nrc","credentials":"arn:aws:iam::158993093339:role/complytrusts3",
+#"httpMethod":"PUT","passthroughBehavior":"WHEN_NO_MATCH","timeoutInMillis":29000,"type":"AWS",
+#"uri":"arn:aws:apigateway:us-east-1:s3:path/aws-backup-logging-bucket/{account_id}/{region}/{object}"}
+
+  apiGatewayCreateS3PutMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: "NONE"
+      HttpMethod: 'PUT'
+      RestApiId: !Ref apiGatewayCreateRestAPI
+      ResourceId: !Ref apiGatewayCreateObjectResource
+      
+      RequestParameters:
+        method.request.header.Access-Control-Allow-Origin: true
+        method.request.header.Content-Type: true
+        method.request.path.account_id: true
+        method.request.path.object: true
+        method.request.path.region: true
+      
+      Integration: 
+        Type: 'AWS'
+        IntegrationHttpMethod: 'PUT'
+        Credentials: !GetAtt APIRole.Arn
+        PassthroughBehavior: 'WHEN_NO_TEMPLATES'
+        RequestParameters:
+          method.request.header.Access-Control-Allow-Origin: true
+          method.request.header.Content-Type: true
+        # RequestModels: 
+        #   text/csv: "Empty"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:s3:path/${CreateS3Bucket}/{account_id}/{region}/{object}"
+
+        RequestParameters:
+          integration.request.path.account_id: 'method.request.path.account_id'
+          integration.request.path.object: 'method.request.path.object'
+          integration.request.path.region: 'method.request.path.region'
+
+        IntegrationResponses: 
+        - ResponseTemplates: 
+            "application/json": "{\n\"message\" : \"DATA PUSHED\"\n}"
+          SelectionPattern: 200
+          StatusCode: 200
+        - ResponseTemplates: 
+            "application/json": "{\n\"error\" : \"Internal server error\"\n}"
+          SelectionPattern: 500
+          StatusCode: 500
+        - ResponseTemplates: 
+            "application/json": "{\n\"error\" : \"Bad Request\"\n}"
+          SelectionPattern: 400
+          StatusCode: 400
+
+        RequestTemplates:
+          "text/csv": ""
+      
+      RequestModels: 
+        text/csv: "Empty"
+
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels: 
+            "application/json" : "Empty"         
+        - StatusCode: 400
+        - StatusCode: 403
+        - StatusCode: 500      
+    DependsOn: apiGatewayCreateObjectResource
+
+  apiGatewayDeploy:
+    Type: AWS::ApiGateway::Deployment
+    Properties: 
+      Description: 'Deploy REST API'
+      RestApiId: !Ref apiGatewayCreateRestAPI
+      StageDescription:
+        Description: 'Deploy to Stage environment'
+      StageName: 'stage'
+    DependsOn: apiGatewayCreateS3PutMethod
+ 
+  #Create API role
+  APIRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: complytrusts3
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+         - Effect: Allow
+           Principal:
+             Service:
+             - apigateway.amazonaws.com
+           Action:
+            - sts:AssumeRole
+      Policies:
+       - PolicyName: APIPolicy
+         PolicyDocument:
+           Version: 2012-10-17
+           Statement:
+            - Effect: Allow
+              Action:
+              - "s3:PutBucketVersioning"
+              - "s3:PutObject"
+              - "s3:PutObjectAcl"
+              - "s3:PutObjectTagging"
+              - "s3:PutObjectVersionAcl"
+              - "s3:PutBucketPolicy"
+              - "s3:AbortMultipartUpload"
+              Resource: !Join [ "", [!GetAtt CreateS3Bucket.Arn,'/*/*/*']]
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs'
+    DependsOn: CreateS3Bucket
 
 Outputs:
-  EC2Instance:
-    Value: !Ref 'EC2Instance'
-    Description: 'EC2 instance create'
-
   BucketName:
-    Value: !Ref 'CreateS3Bucket' 
-    Description: Name of the Amazon S3 bucket
+    Value: !Ref 'CreateS3Bucket'
+    Description: 'Name of the Amazon S3 bucket'
+
+  Role:
+    Value: !GetAtt APIRole.Arn
+    Description: 'Created API role'
+
+  RestApi:
+    Value: !Sub "https://${apiGatewayCreateRestAPI}.execute-api.${AWS::Region}.amazonaws.com/${apiGatewayDeploy}/${CreateS3Bucket}/{account_id}/{region}/{object}"
+    Description: 'Deployed API'
